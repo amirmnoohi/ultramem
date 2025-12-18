@@ -1,0 +1,10 @@
+# Compiled binary
+ultramem
+
+# Object files
+*.o
+*.obj
+
+# Debug files
+*.dSYM/
+
