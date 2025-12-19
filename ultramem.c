@@ -356,53 +356,39 @@ static void *alloc_aligned(size_t alignment, size_t size) {
 }
 
 // ============================================================================
-// Generic benchmark kernel - supports any reads:writes pattern
+// Generic benchmark kernel - supports ANY reads:writes pattern
 // ============================================================================
 
 static double kernel_generic(size_t n, int reads, int writes) {
     double sum = 0.0;
+    double *arrays[3] = {a, b, c};
     
-    if (reads == 0 && writes == 1) {
-        // 0:1 - Write only
-        #pragma omp parallel for simd aligned(a: ALIGN) schedule(static)
+    // Special case: read-only (needs reduction)
+    if (writes == 0 && reads > 0) {
+        #pragma omp parallel for simd reduction(+:sum) aligned(a, b, c: ALIGN) schedule(static)
         for (size_t i = 0; i < n; i++) {
-            a[i] = 1.0;
+            double tmp = 0.0;
+            for (int r = 0; r < reads; r++) {
+                tmp += arrays[r % 3][i];
+            }
+            sum += tmp;
         }
-    } else if (reads == 1 && writes == 0) {
-        // 1:0 - Read only
-        #pragma omp parallel for simd reduction(+:sum) aligned(a: ALIGN) schedule(static)
-        for (size_t i = 0; i < n; i++) {
-            sum += a[i];
+        return sum;
+    }
+    
+    // General case: any combination of reads and writes
+    #pragma omp parallel for simd aligned(a, b, c: ALIGN) schedule(static)
+    for (size_t i = 0; i < n; i++) {
+        // Perform reads
+        double tmp = 0.0;
+        for (int r = 0; r < reads; r++) {
+            tmp += arrays[r % 3][i];
         }
-    } else if (reads == 1 && writes == 1) {
-        // 1:1 - Copy
-        #pragma omp parallel for simd aligned(a, c: ALIGN) schedule(static)
-        for (size_t i = 0; i < n; i++) {
-            c[i] = a[i];
+        
+        // Perform writes
+        for (int w = 0; w < writes; w++) {
+            arrays[w % 3][i] = tmp * (1.0 / (w + 1));
         }
-    } else if (reads == 2 && writes == 1) {
-        // 2:1 - Triad
-        #pragma omp parallel for simd aligned(a, b, c: ALIGN) schedule(static)
-        for (size_t i = 0; i < n; i++) {
-            a[i] = b[i] + 3.0 * c[i];
-        }
-    } else if (reads == 2 && writes == 2) {
-        // 2:2 - Swap-like
-        #pragma omp parallel for simd aligned(a, b, c: ALIGN) schedule(static)
-        for (size_t i = 0; i < n; i++) {
-            double tmp = a[i] + b[i];
-            a[i] = tmp;
-            b[i] = tmp * 0.5;
-        }
-    } else if (reads == 3 && writes == 1) {
-        // 3:1 - Three reads, one write
-        #pragma omp parallel for simd aligned(a, b, c: ALIGN) schedule(static)
-        for (size_t i = 0; i < n; i++) {
-            c[i] = a[i] + b[i] + c[i];
-        }
-    } else {
-        fprintf(stderr, "Unsupported pattern %d:%d\n", reads, writes);
-        exit(1);
     }
     
     return sum;
@@ -524,13 +510,15 @@ void print_usage(const char *prog) {
     printf("  num_threads    Number of OpenMP threads\n");
     printf("  reads:writes   Memory access pattern (e.g., 1:1, 2:1, 1:0, 0:1)\n");
     printf("  array_size_mb  Size of each array in MB (default: 4x L3 cache)\n");
-    printf("\nSupported patterns:\n");
-    printf("  0:1  - Write only\n");
-    printf("  1:0  - Read only\n");
-    printf("  1:1  - Copy (1 read + 1 write)\n");
-    printf("  2:1  - Triad (2 reads + 1 write)\n");
-    printf("  2:2  - Swap-like (2 reads + 2 writes)\n");
-    printf("  3:1  - Three reads + 1 write\n");
+    printf("\nPattern format: reads:writes (any values 0-100)\n");
+    printf("  Bytes transferred = (reads + writes) * 8 bytes per element\n");
+    printf("\nCommon patterns:\n");
+    printf("  0:1  - Write only (8 bytes)\n");
+    printf("  1:0  - Read only (8 bytes)\n");
+    printf("  1:1  - Copy (16 bytes)\n");
+    printf("  2:1  - Triad (24 bytes)\n");
+    printf("  3:3  - Heavy (48 bytes)\n");
+    printf("  10:10 - Extreme (160 bytes)\n");
     printf("\nExamples:\n");
     printf("  %s 8 1:1           # 8 threads, copy pattern\n", prog);
     printf("  %s 32 2:1 1024     # 32 threads, triad, 1GB arrays\n", prog);
@@ -555,8 +543,8 @@ int main(int argc, char *argv[]) {
         fprintf(stderr, "Error: Invalid pattern '%s'. Use format reads:writes (e.g., 1:1, 2:1)\n", argv[2]);
         return 1;
     }
-    if (reads < 0 || reads > 3 || writes < 0 || writes > 2) {
-        fprintf(stderr, "Error: reads must be 0-3, writes must be 0-2\n");
+    if (reads < 0 || reads > 100 || writes < 0 || writes > 100) {
+        fprintf(stderr, "Error: reads and writes must be 0-100\n");
         return 1;
     }
     if (reads == 0 && writes == 0) {
