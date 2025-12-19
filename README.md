@@ -1,14 +1,14 @@
 # UltraMem
 
-High-performance memory bandwidth benchmark that **outperforms STREAM**.
+High-performance memory bandwidth benchmark.
 
 ## Features
 
-- **Faster than STREAM** - Optimized kernels with OpenMP SIMD vectorization
+- **Optimized kernels** - OpenMP SIMD vectorization for maximum bandwidth
 - **Auto cache detection** - Detects L1/L2/L3 cache sizes automatically
 - **Smart array sizing** - Auto-sizes arrays to 4× L3 cache to ensure DRAM testing
 - **Cross-platform** - Linux, macOS, Windows
-- **4 test kernels** - Named as `reads:writes` (1:1, 2:1, 1:0, 0:1)
+- **Flexible patterns** - Any `reads:writes` combination (e.g., 1:1, 2:1, 5:5, 10:10)
 
 ## Quick Start
 
@@ -19,7 +19,7 @@ make
 # Run with 8 threads, copy pattern (1:1)
 ./ultramem 8 1:1
 
-# Run with 32 threads, triad pattern (2:1), 1GB arrays
+# Run with 32 threads, 2:1 pattern, 1GB arrays
 ./ultramem 32 2:1 1024
 ```
 
@@ -57,9 +57,10 @@ Arguments:
   array_size_mb  Size of each array in MB (default: 4x L3 cache)
 
 Examples:
-  ./ultramem 8 1:1           # 8 threads, copy pattern
-  ./ultramem 32 2:1 256      # 32 threads, triad, 256MB arrays
+  ./ultramem 8 1:1           # 8 threads, 1 read + 1 write
+  ./ultramem 32 2:1 256      # 32 threads, 2 reads + 1 write, 256MB arrays
   ./ultramem 96 0:1 1024     # 96 threads, write-only, 1GB arrays
+  ./ultramem 16 5:5          # 16 threads, 5 reads + 5 writes
 ```
 
 ## Sample Output
@@ -101,14 +102,18 @@ Kernel      Best MB/s    Avg MB/s     Min Time     Max Time
 
 ## Kernels
 
-Kernels are named as `reads:writes` to show their memory access pattern:
+Pattern format: `reads:writes` - any values from 0 to 100.
 
-| Kernel | Operation | Bytes/Element |
-|--------|-----------|---------------|
-| 1:1 | `c[i] = a[i]` | 16 (1 read + 1 write) |
-| 2:1 | `a[i] = b[i] + scalar*c[i]` | 24 (2 reads + 1 write) |
-| 1:0 | `sum += a[i]` | 8 (read only) |
-| 0:1 | `a[i] = val` | 8 (write only) |
+**Bytes transferred per element = (reads + writes) × 8 bytes**
+
+| Pattern | Bytes/Element | Description |
+|---------|---------------|-------------|
+| 0:1 | 8 | Write only |
+| 1:0 | 8 | Read only |
+| 1:1 | 16 | Copy |
+| 2:1 | 24 | 2 reads + 1 write |
+| 3:3 | 48 | Heavy load |
+| 10:10 | 160 | Extreme load |
 
 ## Make Targets
 
