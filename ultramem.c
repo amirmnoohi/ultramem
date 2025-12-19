@@ -417,13 +417,22 @@ void run_benchmark(int num_threads, size_t array_size, cache_info_t *cache, int 
     double mem_per_array = (double)(array_size * sizeof(double)) / (1024.0 * 1024.0);
     double total_mem = mem_per_array * 3;
     double l3_mb = (double)cache->l3_size / (1024.0 * 1024.0);
-    double bytes_per_elem = (double)(reads + writes) * sizeof(double);
+    
+    // Calculate actual DRAM bytes (not logical operations)
+    // With only 3 arrays, max unique accesses per element is 3 reads + 3 writes
+    // Additional reads/writes hit L1 cache and don't contribute to DRAM bandwidth
+    int actual_reads = MIN(reads, 3);
+    int actual_writes = MIN(writes, 3);
+    double bytes_per_elem = (double)(actual_reads + actual_writes) * sizeof(double);
     double total_bytes = bytes_per_elem * array_size;
     
     printf("════════════════════════════════════════════════════════════\n");
     printf("  UltraMem - Memory Bandwidth Benchmark\n");
     printf("════════════════════════════════════════════════════════════\n");
     printf("  Kernel pattern:    %d:%d (%d reads + %d writes)\n", reads, writes, reads, writes);
+    if (reads > 3 || writes > 3) {
+        printf("  DRAM accesses:     %d:%d (extra ops hit L1 cache)\n", actual_reads, actual_writes);
+    }
     printf("  Threads:           %d\n", num_threads);
     printf("  Array elements:    %zu\n", array_size);
     printf("  Memory per array:  %.1f MB\n", mem_per_array);
