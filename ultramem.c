@@ -356,55 +356,56 @@ static void *alloc_aligned(size_t alignment, size_t size) {
 }
 
 // ============================================================================
-// Benchmark kernels
+// Generic benchmark kernel - supports any reads:writes pattern
 // ============================================================================
 
-static void kernel_copy(size_t n) {
-    #pragma omp parallel for simd aligned(a, c: ALIGN) schedule(static)
-    for (size_t i = 0; i < n; i++) {
-        c[i] = a[i];
-    }
-}
-
-static void kernel_scale(size_t n, double scalar) {
-    #pragma omp parallel for simd aligned(b, c: ALIGN) schedule(static)
-    for (size_t i = 0; i < n; i++) {
-        b[i] = scalar * c[i];
-    }
-}
-
-static void kernel_add(size_t n) {
-    #pragma omp parallel for simd aligned(a, b, c: ALIGN) schedule(static)
-    for (size_t i = 0; i < n; i++) {
-        c[i] = a[i] + b[i];
-    }
-}
-
-static void kernel_triad(size_t n, double scalar) {
-    #pragma omp parallel for simd aligned(a, b, c: ALIGN) schedule(static)
-    for (size_t i = 0; i < n; i++) {
-        a[i] = b[i] + scalar * c[i];
-    }
-}
-
-static void kernel_read(size_t n, double *restrict sum_out) {
+static double kernel_generic(size_t n, int reads, int writes) {
     double sum = 0.0;
-    #pragma omp parallel for simd reduction(+:sum) aligned(a: ALIGN) schedule(static)
-    for (size_t i = 0; i < n; i++) {
-        sum += a[i];
+    
+    if (reads == 0 && writes == 1) {
+        // 0:1 - Write only
+        #pragma omp parallel for simd aligned(a: ALIGN) schedule(static)
+        for (size_t i = 0; i < n; i++) {
+            a[i] = 1.0;
+        }
+    } else if (reads == 1 && writes == 0) {
+        // 1:0 - Read only
+        #pragma omp parallel for simd reduction(+:sum) aligned(a: ALIGN) schedule(static)
+        for (size_t i = 0; i < n; i++) {
+            sum += a[i];
+        }
+    } else if (reads == 1 && writes == 1) {
+        // 1:1 - Copy
+        #pragma omp parallel for simd aligned(a, c: ALIGN) schedule(static)
+        for (size_t i = 0; i < n; i++) {
+            c[i] = a[i];
+        }
+    } else if (reads == 2 && writes == 1) {
+        // 2:1 - Triad
+        #pragma omp parallel for simd aligned(a, b, c: ALIGN) schedule(static)
+        for (size_t i = 0; i < n; i++) {
+            a[i] = b[i] + 3.0 * c[i];
+        }
+    } else if (reads == 2 && writes == 2) {
+        // 2:2 - Swap-like
+        #pragma omp parallel for simd aligned(a, b, c: ALIGN) schedule(static)
+        for (size_t i = 0; i < n; i++) {
+            double tmp = a[i] + b[i];
+            a[i] = tmp;
+            b[i] = tmp * 0.5;
+        }
+    } else if (reads == 3 && writes == 1) {
+        // 3:1 - Three reads, one write
+        #pragma omp parallel for simd aligned(a, b, c: ALIGN) schedule(static)
+        for (size_t i = 0; i < n; i++) {
+            c[i] = a[i] + b[i] + c[i];
+        }
+    } else {
+        fprintf(stderr, "Unsupported pattern %d:%d\n", reads, writes);
+        exit(1);
     }
-    *sum_out = sum;
-}
-
-static void kernel_write(size_t n, double val) {
-    #pragma omp parallel for simd aligned(a: ALIGN) schedule(static)
-    for (size_t i = 0; i < n; i++) {
-        a[i] = val;
-    }
-}
-
-static void kernel_memcpy(size_t n) {
-    memcpy(c, a, n * sizeof(double));
+    
+    return sum;
 }
 
 #define MIN(x,y) ((x)<(y)?(x):(y))
@@ -414,7 +415,7 @@ static void kernel_memcpy(size_t n) {
 // Main benchmark
 // ============================================================================
 
-void run_benchmark(int num_threads, size_t array_size, cache_info_t *cache) {
+void run_benchmark(int num_threads, size_t array_size, cache_info_t *cache, int reads, int writes) {
     omp_set_num_threads(num_threads);
     
     // Allocate aligned memory
@@ -430,10 +431,13 @@ void run_benchmark(int num_threads, size_t array_size, cache_info_t *cache) {
     double mem_per_array = (double)(array_size * sizeof(double)) / (1024.0 * 1024.0);
     double total_mem = mem_per_array * 3;
     double l3_mb = (double)cache->l3_size / (1024.0 * 1024.0);
+    double bytes_per_elem = (double)(reads + writes) * sizeof(double);
+    double total_bytes = bytes_per_elem * array_size;
     
     printf("════════════════════════════════════════════════════════════\n");
     printf("  UltraMem - Memory Bandwidth Benchmark\n");
     printf("════════════════════════════════════════════════════════════\n");
+    printf("  Kernel pattern:    %d:%d (%d reads + %d writes)\n", reads, writes, reads, writes);
     printf("  Threads:           %d\n", num_threads);
     printf("  Array elements:    %zu\n", array_size);
     printf("  Memory per array:  %.1f MB\n", mem_per_array);
@@ -466,87 +470,48 @@ void run_benchmark(int num_threads, size_t array_size, cache_info_t *cache) {
     }
     printf("  Actual threads:    %d\n\n", actual_threads);
     
-    const char *labels[] = {"Copy", "Scale", "Add", "Triad", "Read", "Write", "Memcpy"};
-    double bytes[] = {
-        2.0 * sizeof(double) * array_size,
-        2.0 * sizeof(double) * array_size,
-        3.0 * sizeof(double) * array_size,
-        3.0 * sizeof(double) * array_size,
-        1.0 * sizeof(double) * array_size,
-        1.0 * sizeof(double) * array_size,
-        2.0 * sizeof(double) * array_size,
-    };
-    
-    double times[7][NTIMES];
-    double scalar = 3.0;
+    double times[NTIMES];
     double dummy_sum = 0.0;
     
-    printf("Running benchmarks...\n\n");
+    printf("Running %d:%d benchmark...\n\n", reads, writes);
     
     for (int k = 0; k < NTIMES; k++) {
-        times[0][k] = get_time_sec();
-        kernel_copy(array_size);
-        times[0][k] = get_time_sec() - times[0][k];
-        
-        times[1][k] = get_time_sec();
-        kernel_scale(array_size, scalar);
-        times[1][k] = get_time_sec() - times[1][k];
-        
-        times[2][k] = get_time_sec();
-        kernel_add(array_size);
-        times[2][k] = get_time_sec() - times[2][k];
-        
-        times[3][k] = get_time_sec();
-        kernel_triad(array_size, scalar);
-        times[3][k] = get_time_sec() - times[3][k];
-        
-        times[4][k] = get_time_sec();
-        kernel_read(array_size, &dummy_sum);
-        times[4][k] = get_time_sec() - times[4][k];
-        
-        times[5][k] = get_time_sec();
-        kernel_write(array_size, 1.0);
-        times[5][k] = get_time_sec() - times[5][k];
-        
-        times[6][k] = get_time_sec();
-        kernel_memcpy(array_size);
-        times[6][k] = get_time_sec() - times[6][k];
+        times[k] = get_time_sec();
+        dummy_sum += kernel_generic(array_size, reads, writes);
+        times[k] = get_time_sec() - times[k];
     }
     
     printf("────────────────────────────────────────────────────────────\n");
     printf("Kernel      Best MB/s    Avg MB/s     Min Time     Max Time\n");
     printf("────────────────────────────────────────────────────────────\n");
     
-    double best_bandwidth = 0.0;
+    double avgtime = 0.0;
+    double mintime = times[1];
+    double maxtime = times[1];
     
-    for (int j = 0; j < 7; j++) {
-        double avgtime = 0.0;
-        double mintime = times[j][1];
-        double maxtime = times[j][1];
-        
-        for (int k = 1; k < NTIMES; k++) {
-            avgtime += times[j][k];
-            mintime = MIN(mintime, times[j][k]);
-            maxtime = MAX(maxtime, times[j][k]);
-        }
-        avgtime /= (NTIMES - 1);
-        
-        double best_bw = bytes[j] / mintime / 1e6;
-        double avg_bw = bytes[j] / avgtime / 1e6;
-        
-        if (best_bw > best_bandwidth) best_bandwidth = best_bw;
-        
-        printf("%-8s  %10.1f  %10.1f   %10.6f   %10.6f\n",
-               labels[j], best_bw, avg_bw, mintime, maxtime);
+    for (int k = 1; k < NTIMES; k++) {
+        avgtime += times[k];
+        mintime = MIN(mintime, times[k]);
+        maxtime = MAX(maxtime, times[k]);
     }
+    avgtime /= (NTIMES - 1);
+    
+    double best_bw = total_bytes / mintime / 1e6;
+    double avg_bw = total_bytes / avgtime / 1e6;
+    
+    char label[16];
+    snprintf(label, sizeof(label), "%d:%d", reads, writes);
+    
+    printf("%-8s  %10.1f  %10.1f   %10.6f   %10.6f\n",
+           label, best_bw, avg_bw, mintime, maxtime);
     
     printf("────────────────────────────────────────────────────────────\n");
     printf("\n");
     printf("════════════════════════════════════════════════════════════\n");
-    printf("  PEAK BANDWIDTH: %.1f MB/s (%.2f GB/s)\n", best_bandwidth, best_bandwidth / 1000.0);
+    printf("  PEAK BANDWIDTH: %.1f MB/s (%.2f GB/s)\n", best_bw, best_bw / 1000.0);
     printf("════════════════════════════════════════════════════════════\n\n");
     
-    if (dummy_sum < 0) printf("%f", dummy_sum);
+    if (dummy_sum < -1e30) printf("%f", dummy_sum);
     
     aligned_free(a);
     aligned_free(b);
@@ -554,18 +519,26 @@ void run_benchmark(int num_threads, size_t array_size, cache_info_t *cache) {
 }
 
 void print_usage(const char *prog) {
-    printf("Usage: %s <num_threads> [array_size_mb]\n", prog);
+    printf("Usage: %s <num_threads> <reads:writes> [array_size_mb]\n", prog);
     printf("\nArguments:\n");
     printf("  num_threads    Number of OpenMP threads\n");
+    printf("  reads:writes   Memory access pattern (e.g., 1:1, 2:1, 1:0, 0:1)\n");
     printf("  array_size_mb  Size of each array in MB (default: 4x L3 cache)\n");
+    printf("\nSupported patterns:\n");
+    printf("  0:1  - Write only\n");
+    printf("  1:0  - Read only\n");
+    printf("  1:1  - Copy (1 read + 1 write)\n");
+    printf("  2:1  - Triad (2 reads + 1 write)\n");
+    printf("  2:2  - Swap-like (2 reads + 2 writes)\n");
+    printf("  3:1  - Three reads + 1 write\n");
     printf("\nExamples:\n");
-    printf("  %s 8           # 8 threads, auto array size (4x L3)\n", prog);
-    printf("  %s 32 256      # 32 threads, 256MB arrays\n", prog);
-    printf("  %s 96 1024     # 96 threads, 1GB arrays\n", prog);
+    printf("  %s 8 1:1           # 8 threads, copy pattern\n", prog);
+    printf("  %s 32 2:1 1024     # 32 threads, triad, 1GB arrays\n", prog);
+    printf("  %s 96 0:1          # 96 threads, write-only\n", prog);
 }
 
 int main(int argc, char *argv[]) {
-    if (argc < 2) {
+    if (argc < 3) {
         print_usage(argv[0]);
         return 1;
     }
@@ -573,6 +546,21 @@ int main(int argc, char *argv[]) {
     int num_threads = atoi(argv[1]);
     if (num_threads <= 0 || num_threads > 1024) {
         fprintf(stderr, "Error: num_threads must be between 1 and 1024\n");
+        return 1;
+    }
+    
+    // Parse reads:writes pattern
+    int reads = 0, writes = 0;
+    if (sscanf(argv[2], "%d:%d", &reads, &writes) != 2) {
+        fprintf(stderr, "Error: Invalid pattern '%s'. Use format reads:writes (e.g., 1:1, 2:1)\n", argv[2]);
+        return 1;
+    }
+    if (reads < 0 || reads > 3 || writes < 0 || writes > 2) {
+        fprintf(stderr, "Error: reads must be 0-3, writes must be 0-2\n");
+        return 1;
+    }
+    if (reads == 0 && writes == 0) {
+        fprintf(stderr, "Error: At least one read or write required\n");
         return 1;
     }
     
@@ -605,8 +593,8 @@ int main(int argc, char *argv[]) {
     
     // Calculate array size
     size_t array_mb;
-    if (argc >= 3) {
-        array_mb = atol(argv[2]);
+    if (argc >= 4) {
+        array_mb = atol(argv[3]);
         if (array_mb < 1 || array_mb > 65536) {
             fprintf(stderr, "Error: array_size_mb must be between 1 and 65536\n");
             return 1;
@@ -621,7 +609,7 @@ int main(int argc, char *argv[]) {
     
     size_t array_size = (array_mb * 1024 * 1024) / sizeof(double);
     
-    run_benchmark(num_threads, array_size, &cache);
+    run_benchmark(num_threads, array_size, &cache, reads, writes);
     
     return 0;
 }

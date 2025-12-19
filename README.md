@@ -8,7 +8,7 @@ High-performance memory bandwidth benchmark that **outperforms STREAM**.
 - **Auto cache detection** - Detects L1/L2/L3 cache sizes automatically
 - **Smart array sizing** - Auto-sizes arrays to 4× L3 cache to ensure DRAM testing
 - **Cross-platform** - Linux, macOS, Windows
-- **7 test kernels** - Copy, Scale, Add, Triad, Read, Write, Memcpy
+- **4 test kernels** - Named as `reads:writes` (1:1, 2:1, 1:0, 0:1)
 
 ## Quick Start
 
@@ -16,11 +16,11 @@ High-performance memory bandwidth benchmark that **outperforms STREAM**.
 # Build
 make
 
-# Run with 8 threads
-./ultramem 8
+# Run with 8 threads, copy pattern (1:1)
+./ultramem 8 1:1
 
-# Run with 32 threads and 1GB arrays
-./ultramem 32 1024
+# Run with 32 threads, triad pattern (2:1), 1GB arrays
+./ultramem 32 2:1 1024
 ```
 
 ## Build
@@ -49,16 +49,17 @@ gcc -O3 -march=native -fopenmp -ffast-math -funroll-loops -ftree-vectorize -o ul
 ## Usage
 
 ```
-./ultramem <threads> [array_size_mb]
+./ultramem <threads> <reads:writes> [array_size_mb]
 
 Arguments:
   threads        Number of OpenMP threads (required)
+  reads:writes   Memory access pattern (required)
   array_size_mb  Size of each array in MB (default: 4x L3 cache)
 
 Examples:
-  ./ultramem 8           # 8 threads, auto array size
-  ./ultramem 32 256      # 32 threads, 256MB arrays
-  ./ultramem 96 1024     # 96 threads, 1GB arrays
+  ./ultramem 8 1:1           # 8 threads, copy pattern
+  ./ultramem 32 2:1 256      # 32 threads, triad, 256MB arrays
+  ./ultramem 96 0:1 1024     # 96 threads, write-only, 1GB arrays
 ```
 
 ## Sample Output
@@ -78,6 +79,7 @@ Examples:
 ════════════════════════════════════════════════════════════
   UltraMem - Memory Bandwidth Benchmark
 ════════════════════════════════════════════════════════════
+  Kernel pattern:    2:1 (2 reads + 1 writes)
   Threads:           32
   Array elements:    16777216
   Memory per array:  128.0 MB
@@ -89,31 +91,24 @@ Examples:
 ────────────────────────────────────────────────────────────
 Kernel      Best MB/s    Avg MB/s     Min Time     Max Time
 ────────────────────────────────────────────────────────────
-Copy         79302.6     78810.3     0.003385     0.003448
-Scale        78422.4     77735.7     0.003423     0.003539
-Add          79527.2     79168.3     0.005063     0.005161
-Triad        79969.1     79617.3     0.005035     0.005079
-Read         87776.3     86033.1     0.001529     0.001584
-Write       103330.9    101889.0     0.001299     0.001340
-Memcpy       26661.9     26532.7     0.010068     0.010221
+2:1          79969.1     79617.3     0.005035     0.005079
 ────────────────────────────────────────────────────────────
 
 ════════════════════════════════════════════════════════════
-  PEAK BANDWIDTH: 103330.9 MB/s (103.33 GB/s)
+  PEAK BANDWIDTH: 79969.1 MB/s (79.97 GB/s)
 ════════════════════════════════════════════════════════════
 ```
 
 ## Kernels
 
+Kernels are named as `reads:writes` to show their memory access pattern:
+
 | Kernel | Operation | Bytes/Element |
 |--------|-----------|---------------|
-| Copy | `c[i] = a[i]` | 16 (1 read + 1 write) |
-| Scale | `b[i] = scalar * c[i]` | 16 (1 read + 1 write) |
-| Add | `c[i] = a[i] + b[i]` | 24 (2 reads + 1 write) |
-| Triad | `a[i] = b[i] + scalar*c[i]` | 24 (2 reads + 1 write) |
-| Read | `sum += a[i]` | 8 (1 read) |
-| Write | `a[i] = val` | 8 (1 write) |
-| Memcpy | `memcpy(c, a, n)` | 16 (baseline) |
+| 1:1 | `c[i] = a[i]` | 16 (1 read + 1 write) |
+| 2:1 | `a[i] = b[i] + scalar*c[i]` | 24 (2 reads + 1 write) |
+| 1:0 | `sum += a[i]` | 8 (read only) |
+| 0:1 | `a[i] = val` | 8 (write only) |
 
 ## Make Targets
 

@@ -49,15 +49,18 @@ uninstall:
 
 # Run quick test
 test: $(TARGET)
-	@echo "Running quick test with 4 threads..."
-	./$(TARGET) 4
+	@echo "Running quick test with 4 threads (2:1 pattern)..."
+	./$(TARGET) 4 2:1
 
-# Run full benchmark
+# Run full benchmark (scales to number of cores, uses 1GB arrays to bypass cache)
+NPROC := $(shell nproc 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 8)
+BENCH_SIZE := 1024
+
 bench: $(TARGET)
-	@echo "Running full benchmark..."
-	@for t in 1 2 4 8 16 32; do \
-		echo "\n=== $$t threads ==="; \
-		./$(TARGET) $$t 256 2>&1 | grep -E "(PEAK|Copy|Triad)"; \
+	@echo "Running full benchmark (all patterns, $(NPROC) threads, $(BENCH_SIZE)MB arrays)..."
+	@for pattern in 1:1 2:1 1:0 0:1; do \
+		echo "\n=== Pattern $$pattern ==="; \
+		./$(TARGET) $(NPROC) $$pattern $(BENCH_SIZE); \
 	done
 
 help:
@@ -71,13 +74,15 @@ help:
 	@echo "  install  - Install to /usr/local/bin"
 	@echo "  uninstall- Remove from /usr/local/bin"
 	@echo "  test     - Run quick test"
-	@echo "  bench    - Run scaling benchmark"
+	@echo "  bench    - Run all patterns benchmark"
 	@echo "  help     - Show this help"
 	@echo ""
 	@echo "Usage after build:"
-	@echo "  ./ultramem <threads> [array_size_mb]"
+	@echo "  ./ultramem <threads> <reads:writes> [array_size_mb]"
+	@echo ""
+	@echo "Patterns: 0:1 (write), 1:0 (read), 1:1 (copy), 2:1 (triad)"
 	@echo ""
 	@echo "Examples:"
-	@echo "  ./ultramem 8          # 8 threads, auto array size"
-	@echo "  ./ultramem 32 1024    # 32 threads, 1GB arrays"
+	@echo "  ./ultramem 8 1:1          # 8 threads, copy pattern"
+	@echo "  ./ultramem 32 2:1 1024    # 32 threads, triad, 1GB arrays"
 
